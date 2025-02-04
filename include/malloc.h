@@ -23,7 +23,7 @@ void *malloc(size_t size);
  * @param size size of memory to reallocate
  * @return pointer to allocated memory
  */
-void *realloc(size_t size);
+void *realloc(void *ptr, size_t size);
 
 /**
  * @param ptr memory pointer to be freed
