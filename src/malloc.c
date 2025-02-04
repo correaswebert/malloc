@@ -137,6 +137,8 @@ remove_free_block(mem_block_t *block)
     if (block->next_free_block) {
         (block->next_free_block)->prev_free_block = block->prev_free_block;
     }
+
+    mark_block_used(block);
 }
 
 void
