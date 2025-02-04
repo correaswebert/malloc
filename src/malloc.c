@@ -119,6 +119,9 @@ static inline void
 insert_free_block_at_head(mem_block_t *block)
 {
     block->next_free_block = free_list_head;
+    if (free_list_head) {
+        free_list_head->prev_free_block = block;
+    }
     free_list_head = block;
 }
 
