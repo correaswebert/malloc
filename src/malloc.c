@@ -3,10 +3,10 @@
 
 #include "malloc.h"
 
-#define MEM_BLOCK_NAME_SIZE 8
-#define PAGE_SIZE 4096
+#define PAGE_SIZE           4096
+#define BLOCK_ALIGN         sizeof(void *)
 
-static_assert(sizeof(void *) % 8 == 0, "Pointer size is not a multiple of 8");
+static_assert(BLOCK_ALIGN % 8 == 0, "Block alignment is not a multiple of 8");
 
 #define BLOCK_SIZE_FLAG_MASK    0b111
 #define BLOCK_FREE              0b001
@@ -15,9 +15,11 @@ static_assert(sizeof(void *) % 8 == 0, "Pointer size is not a multiple of 8");
 
 static void *current_break = NULL;
 
+static unsigned long g_block_counter = 0;
+
 typedef struct mem_block {
     // optional for debugging
-    char name[MEM_BLOCK_NAME_SIZE];
+    unsigned long id;
 
     // blocks are allocated in word sizes, which are generally greater than 8 bytes
     // so the last bit is always zero, and can be used as a flag
@@ -28,7 +30,9 @@ typedef struct mem_block {
 
     struct mem_block *next_block;
     struct mem_block *prev_block;
+
     struct mem_block *next_free_block;
+    struct mem_block *prev_free_block;
 } mem_block_t;
 
 mem_block_t *free_list_head = NULL;
@@ -61,7 +65,8 @@ extend_memory(size_t size)
     mem_block_t *new_block = new_break;
 
     new_block->next_block = NULL;
-    new_block->size = size | BLOCK_FREE | BLOCK_PAGE_ALIGNED;
+    new_block->size = size - sizeof(mem_block_t);
+    new_block->size |= BLOCK_FREE | BLOCK_PAGE_ALIGNED;
 
     new_block->next_free_block = free_list_head;
     free_list_head = new_block;
@@ -78,6 +83,9 @@ extend_memory(size_t size)
         block_list_head->prev_block = new_block;
     }
 
+#ifndef NDEBUG
+    new_block->id = g_block_counter++;
+#endif
 
     return true;
 }
@@ -155,27 +163,63 @@ is_block_page_aligned(mem_block_t *block)
     return block->size & BLOCK_PAGE_ALIGNED;
 }
 
+static inline void
+insert_free_block(mem_block_t *block)
+{
+    block->next_free_block = free_list_head;
+    free_list_head = block;
+}
+
+void
+split_block(mem_block_t *block, size_t utilized_size)
+{
+    size_t block_size = block->size & ~BLOCK_SIZE_FLAG_MASK;
+
+    mem_block_t *new_block = (mem_block_t *)((char *)block + utilized_size);
+
+    new_block->size = block_size - utilized_size;
+    new_block->next_block = block->next_block;
+    new_block->prev_block = block;
+    
+    insert_free_block(new_block);
+
+    int block_flags = block->size & BLOCK_SIZE_FLAG_MASK;
+    block->size = utilized_size;
+    block->size |= block_flags;
+    block->size &= ~BLOCK_FREE;
+
+    block->next_block = new_block;
+
+#ifndef NDEBUG
+    new_block->id = g_block_counter++;
+#endif
+}
+
 void *
 malloc(size_t size)
 {
     mem_block_t *block = NULL;
 
-    size = align(size + sizeof(mem_block_t), sizeof(void *));
+    size_t utilized_size = align(size + sizeof(mem_block_t), sizeof(void *));
 
-    block = get_free_block(size);
+    block = get_free_block(utilized_size);
 
     if (block == NULL) {
-        size_t block_size = align(size, PAGE_SIZE);
+        size_t block_size = align(utilized_size, PAGE_SIZE);
 
         bool ret = extend_memory(block_size);
         if (ret == false) {
             return NULL;
         }
 
-        block = get_free_block(size);
+        block = get_free_block(utilized_size);
     }
 
     mark_block_used(block);
+
+    if ((block->size & ~BLOCK_SIZE_FLAG_MASK) > utilized_size) {
+        split_block(block, utilized_size);
+    }
 
     return block + sizeof(mem_block_t);
 }
