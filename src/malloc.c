@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <pthread.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -15,8 +16,11 @@ static_assert(BLOCK_ALIGN % 8 == 0, "Block alignment is not a multiple of 8");
 #define BLOCK_LIST_HEAD         0b100
 
 static void *current_break = NULL;
+static void *initial_break = NULL;
 
 static unsigned long g_block_counter = 1;
+
+pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct mem_block {
     // optional for debugging
@@ -63,6 +67,10 @@ extend_memory(size_t size)
 
     current_break = new_break;
 
+    if (initial_break == NULL) {
+        initial_break = (char *)new_break + size;
+    }
+
     mem_block_t *new_block = new_break;
 
     new_block->next_block = NULL;
@@ -75,7 +83,7 @@ extend_memory(size_t size)
     if (block_list_head == NULL) {
         block_list_head = new_block;
         block_list_head->size |= BLOCK_LIST_HEAD;
-        block_list_head->prev_block = block_list_head;
+        block_list_head->prev_block = NULL;
         free_list_head = block_list_head;
     } else {
         mem_block_t *list_tail = block_list_head->prev_block;
@@ -102,6 +110,11 @@ release_memory(size_t size)
     }
 
     current_break = new_break;
+
+    if (current_break == initial_break) {
+        block_list_head = NULL;
+        free_list_head = NULL;
+    }
 
     return true;
 
@@ -165,26 +178,45 @@ is_block_page_aligned(mem_block_t *block)
 }
 
 static inline void
-insert_free_block(mem_block_t *block)
+insert_free_block_at_head(mem_block_t *block)
 {
     block->next_free_block = free_list_head;
     free_list_head = block;
 }
 
+static inline size_t
+block_size(mem_block_t *block)
+{
+    return block->size & ~BLOCK_SIZE_FLAG_MASK;
+}
+
+static inline void
+remove_free_block(mem_block_t *block)
+{
+    if (block->prev_free_block) {
+        (block->prev_free_block)->next_free_block = block->next_free_block;
+    } else {
+        free_list_head = block->next_free_block;
+    }
+
+    if (block->next_free_block) {
+        (block->next_free_block)->prev_free_block = block->prev_free_block;
+    }
+}
+
 void
 split_block(mem_block_t *block, size_t utilized_size)
 {
-    size_t block_size = block->size & ~BLOCK_SIZE_FLAG_MASK;
-
     mem_block_t *new_block = (mem_block_t *)((char *)block + utilized_size);
 
-    new_block->size = block_size - utilized_size;
+    new_block->size = block_size(block) - utilized_size;
     new_block->next_block = block->next_block;
     new_block->prev_block = block;
 
     mark_block_free(new_block);
 
-    insert_free_block(new_block);
+    remove_free_block(block);
+    insert_free_block_at_head(new_block);
 
     int block_flags = block->size & BLOCK_SIZE_FLAG_MASK;
     block->size = utilized_size;
@@ -221,29 +253,32 @@ malloc(size_t size)
 
     mark_block_used(block);
 
-    if ((block->size & ~BLOCK_SIZE_FLAG_MASK) > utilized_size) {
+    if (block_size(block) > utilized_size) {
         split_block(block, utilized_size);
     }
 
-    return block + sizeof(mem_block_t);
+    return (char *)block + sizeof(mem_block_t);
 }
 
-static inline void
+static inline mem_block_t *
 merge_neigh_free_blocks(mem_block_t *block)
 {
     mem_block_t *next_block = block->next_block;
 
     if (next_block && is_block_free(next_block)) {
-        block->size += next_block->size;
+        block->size += block_size(next_block);
         block->next_block = next_block->next_block;
     }
 
     mem_block_t *prev_block = block->prev_block;
 
     if (prev_block && is_block_free(prev_block)) {
-        prev_block->size += block->size;
+        prev_block->size += block_size(block);
         prev_block->next_block = block->next_block;
+        block = prev_block;
     }
+
+    return block;
 }
 
 void
@@ -256,7 +291,8 @@ free(void *ptr)
     merge_neigh_free_blocks(block);
 
     if (is_block_page_aligned(block)) {
-        release_memory(block->size);
+        size_t utilized_size = block_size(block) + sizeof(mem_block_t);
+        release_memory(utilized_size);
     }
 }
 
@@ -275,10 +311,31 @@ char *
 ulltoa(size_t num, char buffer[])
 {
     int i = 0;
-    while (num) {
+    do {
         buffer[i++] = num % 10 + '0';
         num /= 10;
+    } while (num);
+
+    for (int j = 0; j < i / 2; j++) {
+        char temp = buffer[j];
+        buffer[j] = buffer[i - j - 1];
+        buffer[i - j - 1] = temp;
     }
+
+    buffer[i] = '\0';
+
+    return buffer;
+}
+
+char *
+tohex(unsigned long num, char buffer[])
+{
+    int i = 0;
+
+    do {
+        buffer[i++] = "0123456789ABCDEF"[num & 0xF];
+        num >>= 4;
+    } while(num);
 
     for (int j = 0; j < i / 2; j++) {
         char temp = buffer[j];
@@ -320,11 +377,11 @@ malloc_print()
 
     while (block) {
         console_log("[BLOCK 0x");
-        console_log(ulltoa((size_t)block, buffer));
+        console_log(tohex((size_t)block, buffer));
         console_log("-0x");
-        console_log(ulltoa((size_t)(char *)block + block->size, buffer));
+        console_log(tohex((size_t)(char *)block + block_size(block), buffer));
         console_log("] ");
-        console_log(ulltoa(block->size, buffer));
+        console_log(ulltoa(block_size(block), buffer));
         console_log(" [");
         console_log(is_block_free(block) ? "FREE" : "USED");
         console_log("]  'Blk ");
@@ -340,9 +397,10 @@ malloc_print()
 
     while (block) {
         console_log("[0x");
-        console_log(ulltoa((size_t)block, buffer));
+        console_log(tohex((size_t)block, buffer));
         console_log("] -> ");
         block = block->next_free_block;
     }
-    console_log("NULL\n");
+
+    console_log("NULL\n\n");
 }
