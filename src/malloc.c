@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <unistd.h>
 
 #include "malloc.h"
@@ -5,9 +6,10 @@
 #define MEM_BLOCK_NAME_SIZE 8
 #define PAGE_SIZE 4096
 
+static void *initial_break = NULL;
 static void *current_break = NULL;
 
-struct mem_block {
+typedef struct mem_block {
     // optional for debugging
     char name[MEM_BLOCK_NAME_SIZE];
 
@@ -19,9 +21,9 @@ struct mem_block {
     struct mem_block *prev_block;
 
     void *data;
-};
+} mem_block_t;
 
-inline size_t
+static inline size_t
 align(size_t n, int align)
 {
     return (n + align - 1) & ~(align - 1);
@@ -30,35 +32,69 @@ align(size_t n, int align)
 void
 init_malloc()
 {
-    current_break = sbrk(0);
+    initial_break = sbrk(0);
+}
+
+bool
+extend_memory(size_t size)
+{
+    assert(size % PAGE_SIZE == 0);
+
+    void *new_break = sbrk(size);
+    if (new_break == (void *)-1) {
+        return false;
+    }
+
+    current_break = new_break;
+
+    return true;
 }
 
 void *
-extend_memory(size_t size)
+get_free_block(size_t size)
 {
-    size = align(size, PAGE_SIZE);
+    struct mem_block *block = current_break;
 
-    void *ptr = sbrk(size);
+    while (block) {
+        if (block->size >= size) {
+            return block;
+        }
 
-    return ptr;
+        block = block->next_block;
+    }
+
+    return NULL;
+}
+
+static inline void
+mark_as_used_free_block(mem_block_t *block)
+{
+    block->size = block->size & ~1;
 }
 
 void *
 malloc(size_t size)
 {
-    void *ptr = NULL;
+    mem_block_t *block = NULL;
 
     size = align(size, sizeof(void *));
 
-    // check if enough memory is available
+    block = get_free_block(size);
 
-    // sbrk additional memory in a multiple of the system page size
+    if (block == NULL) {
+        size_t block_size = align(size, PAGE_SIZE);
 
-    // use fsm algo to find the next free block
+        bool ret = extend_memory(block_size);
+        if (ret == false) {
+            return NULL;
+        }
 
-    // mark block as used
+        block = get_free_block(size);
+    }
 
-    return ptr;
+    mark_as_used_free_block(block);
+
+    return block->data;
 }
 
 void
