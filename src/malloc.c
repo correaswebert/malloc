@@ -8,9 +8,10 @@
 
 static_assert(sizeof(void *) % 8 == 0, "Pointer size is not a multiple of 8");
 
-#define BLOCK_SIZE_FLAG_MASK 0b111
-#define BLOCK_FREE 1
-#define BLOCK_PAGE_ALIGNED 1 << 1
+#define BLOCK_SIZE_FLAG_MASK    0b111
+#define BLOCK_FREE              0b001
+#define BLOCK_PAGE_ALIGNED      0b010
+#define BLOCK_LIST_HEAD         0b100
 
 static void *current_break = NULL;
 
@@ -27,6 +28,7 @@ typedef struct mem_block {
 
     struct mem_block *next_block;
     struct mem_block *prev_block;
+    struct mem_block *next_free_block;
 } mem_block_t;
 
 mem_block_t *free_list_head = NULL;
@@ -56,7 +58,26 @@ extend_memory(size_t size)
 
     current_break = new_break;
 
-    block_list_head->size += size;
+    mem_block_t *new_block = new_break;
+
+    new_block->next_block = NULL;
+    new_block->size = size | BLOCK_FREE | BLOCK_PAGE_ALIGNED;
+
+    new_block->next_free_block = free_list_head;
+    free_list_head = new_block;
+
+    if (block_list_head == NULL) {
+        block_list_head = new_block;
+        block_list_head->size |= BLOCK_LIST_HEAD;
+        block_list_head->prev_block = block_list_head;
+        free_list_head = block_list_head;
+    } else {
+        mem_block_t *list_tail = block_list_head->prev_block;
+        new_block->prev_block = list_tail;
+        list_tail->next_block = new_block;
+        block_list_head->prev_block = new_block;
+    }
+
 
     return true;
 }
