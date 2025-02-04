@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "malloc.h"
@@ -15,7 +16,7 @@ static_assert(BLOCK_ALIGN % 8 == 0, "Block alignment is not a multiple of 8");
 
 static void *current_break = NULL;
 
-static unsigned long g_block_counter = 0;
+static unsigned long g_block_counter = 1;
 
 typedef struct mem_block {
     // optional for debugging
@@ -180,13 +181,16 @@ split_block(mem_block_t *block, size_t utilized_size)
     new_block->size = block_size - utilized_size;
     new_block->next_block = block->next_block;
     new_block->prev_block = block;
-    
+
+    mark_block_free(new_block);
+
     insert_free_block(new_block);
 
     int block_flags = block->size & BLOCK_SIZE_FLAG_MASK;
     block->size = utilized_size;
     block->size |= block_flags;
-    block->size &= ~BLOCK_FREE;
+
+    mark_block_used(block);
 
     block->next_block = new_block;
 
@@ -264,4 +268,81 @@ malloc_setfsm(enum free_space_management_algorithm fsm)
     fsm_algo = fsm;
 
     return true;
+}
+
+
+char *
+ulltoa(size_t num, char buffer[])
+{
+    int i = 0;
+    while (num) {
+        buffer[i++] = num % 10 + '0';
+        num /= 10;
+    }
+
+    for (int j = 0; j < i / 2; j++) {
+        char temp = buffer[j];
+        buffer[j] = buffer[i - j - 1];
+        buffer[i - j - 1] = temp;
+    }
+
+    buffer[i] = '\0';
+
+    return buffer;
+}
+
+static inline void
+console_log(char buffer[])
+{
+    write(STDOUT_FILENO, buffer, strlen(buffer));
+}
+
+/*
+ * -- Current Memory State --
+ * [BLOCK 0x7f0d774e7000-0x7f0d774e70a8] 168     [USED]  'Blk 1'
+ * [BLOCK 0x7f0d774b0000-0x7f0d774b0050] 80      [USED]  'Blk 2'
+ * [BLOCK 0x7f0d774af000-0x7f0d774af0a8] 168     [USED]  'Blk 3'
+ *     ...
+ * (list continues)
+ * 
+ * -- Free List --
+ * [0x7f0d774e70a8] -> [0x7f0d774b0050] -> [0x7f0d774af0a8] -> (...) -> NULL
+ */
+
+void
+malloc_print()
+{
+    char buffer[64];
+
+    console_log("-- Current Memory State --\n");
+
+    mem_block_t *block = block_list_head;
+
+    while (block) {
+        console_log("[BLOCK 0x");
+        console_log(ulltoa((size_t)block, buffer));
+        console_log("-0x");
+        console_log(ulltoa((size_t)(char *)block + block->size, buffer));
+        console_log("] ");
+        console_log(ulltoa(block->size, buffer));
+        console_log(" [");
+        console_log(is_block_free(block) ? "FREE" : "USED");
+        console_log("]  'Blk ");
+        console_log(ulltoa(block->id, buffer));
+        console_log("'\n");
+
+        block = block->next_block;
+    }
+
+    console_log("\n-- Free List --\n");
+
+    block = free_list_head;
+
+    while (block) {
+        console_log("[0x");
+        console_log(ulltoa((size_t)block, buffer));
+        console_log("] -> ");
+        block = block->next_free_block;
+    }
+    console_log("NULL\n");
 }
