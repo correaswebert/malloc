@@ -268,6 +268,7 @@ merge_neigh_free_blocks(mem_block_t *block)
     if (next_block && is_block_free(next_block)) {
         block->size += block_size(next_block);
         block->next_block = next_block->next_block;
+        remove_free_block(next_block);
     }
 
     mem_block_t *prev_block = block->prev_block;
@@ -275,6 +276,7 @@ merge_neigh_free_blocks(mem_block_t *block)
     if (prev_block && is_block_free(prev_block)) {
         prev_block->size += block_size(block);
         prev_block->next_block = block->next_block;
+        remove_free_block(block);
         block = prev_block;
     }
 
@@ -288,11 +290,15 @@ free(void *ptr)
 
     mark_block_free(block);
 
-    merge_neigh_free_blocks(block);
+    block = merge_neigh_free_blocks(block);
+    insert_free_block_at_head(block);
 
     if (is_block_page_aligned(block)) {
         size_t utilized_size = block_size(block) + sizeof(mem_block_t);
-        release_memory(utilized_size);
+
+        if (utilized_size >= PAGE_SIZE) {
+            release_memory(utilized_size);
+        }
     }
 }
 
@@ -402,5 +408,13 @@ malloc_print()
         block = block->next_free_block;
     }
 
-    console_log("NULL\n\n");
+    console_log("NULL\n");
+
+    console_log("\n-- List Pointers --\n");
+    console_log("free list head: 0x");
+    console_log(tohex((size_t)free_list_head, buffer));
+    console_log("\nblock list head: 0x");
+    console_log(tohex((size_t)block_list_head, buffer));
+
+    console_log("\n-----------------------------------------------\n");
 }
