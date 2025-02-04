@@ -5,14 +5,6 @@
 
 // TODO: split this into a separate header file to abstract the implementation
 
-struct block {
-    size_t size;
-    struct block *next;
-    struct block *prev;
-    int free;
-    void *ptr;
-};
-
 enum free_space_management_algorithm {
     FSM_FIRST_FIT,
     FSM_BEST_FIT,
