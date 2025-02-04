@@ -3,17 +3,9 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "block.h"
+#include "console.h"
 #include "malloc.h"
-
-#define PAGE_SIZE           4096
-#define BLOCK_ALIGN         sizeof(void *)
-
-static_assert(BLOCK_ALIGN % 8 == 0, "Block alignment is not a multiple of 8");
-
-#define BLOCK_SIZE_FLAG_MASK    0b111
-#define BLOCK_FREE              0b001
-#define BLOCK_PAGE_ALIGNED      0b010
-#define BLOCK_LIST_HEAD         0b100
 
 static void *current_break = NULL;
 static void *initial_break = NULL;
@@ -22,38 +14,8 @@ static unsigned long g_block_counter = 1;
 
 pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-typedef struct mem_block {
-    // optional for debugging
-    unsigned long id;
-
-    // blocks are allocated in word sizes, which are generally greater than 8 bytes
-    // so the last bit is always zero, and can be used as a flag
-    // Let Byte 0 indicate LSB
-    // Byte 0: 1 -> free, used to get next free block
-    // Byte 1: 1 -> page aligned, used to sbrk the memory back
-    size_t size;
-
-    struct mem_block *next_block;
-    struct mem_block *prev_block;
-
-    struct mem_block *next_free_block;
-    struct mem_block *prev_free_block;
-} mem_block_t;
-
-mem_block_t *free_list_head = NULL;
-mem_block_t *block_list_head = NULL;
-
-mem_block_t *
-get_header(void *ptr)
-{
-    return (mem_block_t *)((char *)ptr - sizeof(mem_block_t));
-}
-
-static inline size_t
-align(size_t n, int align)
-{
-    return (n + align - 1) & ~(align - 1);
-}
+static mem_block_t *free_list_head = NULL;
+static mem_block_t *block_list_head = NULL;
 
 bool
 extend_memory(size_t size)
@@ -154,40 +116,10 @@ get_free_block(size_t size)
 }
 
 static inline void
-mark_block_used(mem_block_t *block)
-{
-    block->size &= ~BLOCK_FREE;
-}
-
-static inline void
-mark_block_free(mem_block_t *block)
-{
-    block->size |= BLOCK_FREE;
-}
-
-static inline bool
-is_block_free(mem_block_t *block)
-{
-    return block->size & BLOCK_FREE;
-}
-
-static inline bool
-is_block_page_aligned(mem_block_t *block)
-{
-    return block->size & BLOCK_PAGE_ALIGNED;
-}
-
-static inline void
 insert_free_block_at_head(mem_block_t *block)
 {
     block->next_free_block = free_list_head;
     free_list_head = block;
-}
-
-static inline size_t
-block_size(mem_block_t *block)
-{
-    return block->size & ~BLOCK_SIZE_FLAG_MASK;
 }
 
 static inline void
@@ -215,7 +147,7 @@ split_block(mem_block_t *block, size_t utilized_size)
 
     mark_block_free(new_block);
 
-    remove_free_block(block);
+    remove_free_block(block); // block is now used
     insert_free_block_at_head(new_block);
 
     int block_flags = block->size & BLOCK_SIZE_FLAG_MASK;
@@ -268,6 +200,7 @@ merge_neigh_free_blocks(mem_block_t *block)
     if (next_block && is_block_free(next_block)) {
         block->size += block_size(next_block);
         block->next_block = next_block->next_block;
+
         remove_free_block(next_block);
     }
 
@@ -276,6 +209,7 @@ merge_neigh_free_blocks(mem_block_t *block)
     if (prev_block && is_block_free(prev_block)) {
         prev_block->size += block_size(block);
         prev_block->next_block = block->next_block;
+
         remove_free_block(block);
         block = prev_block;
     }
@@ -310,54 +244,6 @@ malloc_setfsm(enum free_space_management_algorithm fsm)
     fsm_algo = fsm;
 
     return true;
-}
-
-
-char *
-ulltoa(size_t num, char buffer[])
-{
-    int i = 0;
-    do {
-        buffer[i++] = num % 10 + '0';
-        num /= 10;
-    } while (num);
-
-    for (int j = 0; j < i / 2; j++) {
-        char temp = buffer[j];
-        buffer[j] = buffer[i - j - 1];
-        buffer[i - j - 1] = temp;
-    }
-
-    buffer[i] = '\0';
-
-    return buffer;
-}
-
-char *
-tohex(unsigned long num, char buffer[])
-{
-    int i = 0;
-
-    do {
-        buffer[i++] = "0123456789ABCDEF"[num & 0xF];
-        num >>= 4;
-    } while(num);
-
-    for (int j = 0; j < i / 2; j++) {
-        char temp = buffer[j];
-        buffer[j] = buffer[i - j - 1];
-        buffer[i - j - 1] = temp;
-    }
-
-    buffer[i] = '\0';
-
-    return buffer;
-}
-
-static inline void
-console_log(char buffer[])
-{
-    write(STDOUT_FILENO, buffer, strlen(buffer));
 }
 
 /*
